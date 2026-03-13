@@ -33,5 +33,15 @@ int main(int argc, char const *argv[])
 
     auto ptr9 = ros.get("app///////////index/");
     std::cout << (ptr9.lock())->name << std::endl;
+
+    auto ptr10 = ros.get("app/api");
+    if (!ptr10.expired())
+    {
+        std::cout << (ptr10.lock())->name << std::endl;
+    }
+    else
+    {
+        std::cout << "not found" << std::endl;
+    }
     return 0;
 }
