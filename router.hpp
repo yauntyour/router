@@ -178,8 +178,7 @@ namespace rt
                     temp = &(new_node->list);
                 }
             }
-            // 处理根路径 ""
-            if (parts.empty())
+            if (parts.size() == 1 && parts[0] == "")
             {
                 base->func = func;
             }

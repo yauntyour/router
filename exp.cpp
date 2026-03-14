@@ -6,6 +6,16 @@ int main(int argc, char const *argv[])
     rt::router ros;
 
     ros.on("app/index");
+    ros.on("/", [](std::string &url, std::string &data, const std::map<std::string, std::string> &params) -> int
+           {
+        std::cout << "root" << std::endl;
+        return 0; });
+
+    std::string url = "/";
+    std::string data = "";
+    auto [ptr, param] = ros.get("/");
+    auto node = ptr.lock();
+    node->func(url, data, param);
 
     auto [ptr1, param1] = ros.get("app/index/");
     std::cout << (ptr1.lock())->name << std::endl;
