@@ -8,6 +8,7 @@
 #include <vector>
 #include <functional>
 #include <memory>
+#include <map>
 
 namespace rt
 {
@@ -17,7 +18,11 @@ namespace rt
         FLAG_ERROR,
         FLAG_WARN
     };
-    int default_func(std::string &url, std::string &data)
+
+    // 修改回调函数类型，增加 params 参数用于接收动态路由参数
+    using HandlerFunc = std::function<int(std::string &, std::string &, const std::map<std::string, std::string> &)>;
+
+    int default_func(std::string &url, std::string &data, const std::map<std::string, std::string> &params)
     {
         data = "<null>";
         return FLAG_DONE;
@@ -26,10 +31,14 @@ namespace rt
     struct node
     {
         std::string name = "";
-        std::function<int(std::string &, std::string &)> func = default_func;
+        bool is_dynamic = false; // 标记是否为动态节点 (例如 :id)
+        HandlerFunc func = default_func;
         std::unordered_map<std::string, std::shared_ptr<node>> list;
-        node(std::string &name, std::function<int(std::string &, std::string &)> func = default_func) : name(name), func(func) {};
+
         node() = default;
+        node(std::string &name, bool dynamic, HandlerFunc func = default_func)
+            : name(name), is_dynamic(dynamic), func(func) {}
+
         ~node()
         {
             list.clear();
@@ -41,6 +50,7 @@ namespace rt
     private:
         std::shared_ptr<node> base = std::shared_ptr<node>(new node());
         std::unordered_map<std::string, std::shared_ptr<node>> list;
+
         void fix_url(std::string &url)
         {
             if (!url.empty())
@@ -60,13 +70,9 @@ namespace rt
                 if (url != "/")
                 {
                     if (url[0] == '/')
-                    {
                         url = url.substr(1, url.length() - 1);
-                    }
                     if (url[url.length() - 1] == '/')
-                    {
                         url = url.substr(0, url.length() - 1);
-                    }
                 }
                 else
                 {
@@ -74,6 +80,136 @@ namespace rt
                 }
             }
         }
+
+        // 递归查找匹配节点，同时收集参数
+        std::shared_ptr<node> find_match(std::unordered_map<std::string, std::shared_ptr<node>> &current_list,
+                                         const std::vector<std::string> &parts,
+                                         size_t index,
+                                         std::map<std::string, std::string> &params)
+        {
+            if (index >= parts.size())
+            {
+                // 路径遍历结束，返回当前节点（如果是根节点需特殊处理，这里简化逻辑）
+                return nullptr;
+            }
+
+            std::string current_part = parts[index];
+            bool is_last = (index == parts.size() - 1);
+
+            // 1. 尝试精确匹配静态节点
+            auto it = current_list.find(current_part);
+            if (it != current_list.end())
+            {
+                if (is_last)
+                {
+                    return it->second; // 找到最终节点
+                }
+                else
+                {
+                    return find_match(it->second->list, parts, index + 1, params);
+                }
+            }
+
+            // 2. 如果没有静态匹配，尝试匹配动态节点 (is_dynamic == true)
+            for (auto &pair : current_list)
+            {
+                if (pair.second->is_dynamic)
+                {
+                    // 将路径部分存入参数表，key 为节点名 (去掉可能的 ':' 前缀)
+                    std::string param_key = pair.second->name;
+                    if (param_key.front() == ':')
+                        param_key = param_key.substr(1);
+
+                    params[param_key] = current_part;
+
+                    if (is_last)
+                    {
+                        return pair.second; // 找到最终动态节点
+                    }
+                    else
+                    {
+                        auto res = find_match(pair.second->list, parts, index + 1, params);
+                        if (res)
+                            return res; // 如果后续路径也匹配成功
+                        // 如果后续不匹配，回溯（此处简单实现直接返回，复杂场景需移除参数）
+                        params.erase(param_key);
+                    }
+                }
+            }
+
+            return nullptr;
+        }
+
+    public:
+        router() = default;
+        ~router() { list.clear(); }
+
+        // 注册路由，支持 ":param" 格式
+        void on(std::string url, HandlerFunc func = default_func)
+        {
+            fix_url(url);
+            std::vector<std::string> parts;
+            split_on(url, '/', [&](std::string part, size_t i)
+                     { parts.push_back(part); });
+
+            auto *temp = &list;
+
+            for (size_t i = 0; i < parts.size(); ++i)
+            {
+                std::string part = parts[i];
+                bool is_dynamic = (part.length() > 0 && part[0] == ':');
+
+                auto it = temp->find(part);
+                if (it != temp->end())
+                {
+                    // 节点已存在
+                    if (i == parts.size() - 1)
+                    {
+                        it->second->func = func;
+                        it->second->is_dynamic = is_dynamic; // 更新动态标记
+                    }
+                    temp = &(it->second->list);
+                }
+                else
+                {
+                    // 创建新节点
+                    std::shared_ptr<node> new_node = std::make_shared<node>(part, is_dynamic, (i == parts.size() - 1) ? func : default_func);
+                    (*temp)[part] = new_node;
+                    temp = &(new_node->list);
+                }
+            }
+            // 处理根路径 ""
+            if (parts.empty())
+            {
+                base->func = func;
+            }
+        }
+
+        // 获取匹配结果及参数
+        std::pair<std::weak_ptr<node>, std::map<std::string, std::string>> get(std::string url)
+        {
+            fix_url(url);
+            std::map<std::string, std::string> params;
+
+            if (url == "")
+            {
+                return {std::weak_ptr<node>(base), params};
+            }
+
+            std::vector<std::string> parts;
+            split_on(url, '/', [&](std::string part, size_t i)
+                     { parts.push_back(part); });
+
+            auto matched_node = find_match(list, parts, 0, params);
+
+            if (matched_node)
+            {
+                return {std::weak_ptr<node>(matched_node), params};
+            }
+
+            return {std::weak_ptr<node>(), params};
+        }
+
         void split_on(std::string &str, char d, std::function<void(std::string, size_t)> cb)
         {
             size_t start = 0;
@@ -86,96 +222,7 @@ namespace rt
                 }
             }
         }
-        std::weak_ptr<node> split_get(std::string &str, char d, std::function<std::weak_ptr<node>(std::string, size_t)> cb)
-        {
-            size_t start = 0;
-            for (size_t i = 0; i <= str.size(); ++i)
-            {
-                if (i == str.size() || str[i] == d)
-                {
-                    auto p = cb(str.substr(start, i - start), i);
-                    if (!p.expired())
-                    {
-                        return p;
-                    }
-                    start = i + 1;
-                }
-            }
-            return std::weak_ptr<node>();
-        }
-
-    public:
-        router() = default;
-        ~router()
-        {
-            list.clear();
-        };
-        void on(std::string url, std::function<int(std::string &, std::string &)> func = default_func)
-        {
-            fix_url(url);
-            if (url == "")
-            {
-                base->func = func;
-                return;
-            }
-            auto *temp = &list;
-            split_on(url, '/', [&](std::string part, size_t i)
-                     {
-                        auto it = temp->find(part);
-                        if (it != temp->end())
-                        {
-                            if (i == url.length())
-                            {
-                                if (it->second != nullptr)
-                                {
-                                    it->second->func = func;
-                                }else
-                                {
-                                    it->second = std::shared_ptr<node>(new node(part,func));
-                                }
-                            }else
-                            {
-                                temp = &(temp->operator[](part)->list);
-                            }
-                        }else
-                        {
-                            if (i == url.length())
-                            {
-                                temp->operator[](part) = std::shared_ptr<node>(new node(part,func));
-                            }else
-                            {
-                                temp->operator[](part) = std::shared_ptr<node>(new node(part,default_func));
-                            }
-                            temp = &(temp->operator[](part)->list);
-                        } });
-        }
-        std::weak_ptr<node> get(std::string url)
-        {
-            fix_url(url);
-            if (url == "")
-            {
-                return std::weak_ptr<node>(base);
-            }
-            auto *temp = &list;
-            std::weak_ptr<node> ptr = split_get(url, '/', [&](std::string part, size_t i) -> std::weak_ptr<node>
-                                                {
-                        auto it = temp->find(part);
-                        if (it != temp->end())
-                        {
-                            if (i == url.length())
-                            {
-                                return std::weak_ptr<node>(it->second);
-                            }else{
-                                temp = &(temp->operator[](part)->list);
-                                return std::weak_ptr<node>();
-                            }
-                        }else
-                        {
-                            return std::weak_ptr<node>();
-                        } });
-            return ptr;
-        }
     };
-} // namespace rot
+}
 
-#endif //!__ROUTER__H__
+#endif
