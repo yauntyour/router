@@ -42,26 +42,27 @@ int main(int argc, char const *argv[])
 }
 ```
 
-## 回调函数示例
+## 回调函数类型
 
 ```c++
-std::function<int(std::string &, std::string &)> func;
+// 标准路由回调：参数 (url, data输出, params动态路由参数字典) -> 状态码
+using HandlerFunc = std::function<int(std::string &, std::string &, const std::map<std::string, std::string> &)>;
 
 //example:
-int default_func(std::string &url, std::string &data)
+int default_func(std::string &url, std::string &data, const std::map<std::string, std::string> &params)
 {
- data = "<null>";
- return FLAG_DONE;
+    data = "<null>";
+    return FLAG_DONE;
 }
 ```
 
-## 异常状态标注：（对路由无影响，表明回调函数的执行情况，可以自行安排）
+## 状态码：（对路由无影响，表明回调函数的执行情况，可以自行安排）
 
 ```c++
 enum service_state
 {
- FLAG_DONE = 0,
- FLAG_ERROR,
+    FLAG_DONE = 0,
+    FLAG_ERROR,
     FLAG_WARN
 };
 ```
@@ -71,105 +72,83 @@ enum service_state
 全自动注册节点（基于哈希表）
 
 ```c++
-int page_func(std::string &url, std::string &data)
+int page_func(std::string &url, std::string &data, const std::map<std::string, std::string> &params)
 {
- data = "<h1>Hello</h1>";
- return FLAG_DONE;
+    data = "<h1>Hello</h1>";
+    return FLAG_DONE;
 }
 
 ros.on("app/index");
 ros.on("app/test");
-ros.on("app/index/page",page_func);
+ros.on("app/index/page", page_func);
 ```
 
 对应的节点为：
 
-```
+```text
 app/
- index/
-  page/
- test/
+  index/
+    page/
+  test/
 ```
 
-不提供回调函数则默认设置为`default_func`
+不提供回调函数则默认设置为 `default_func`
 
 ## 动态路由
 
+支持 `:param` 格式的动态路径参数匹配。
+
 ```c++
-#include "router.hpp"
-#include "iostream"
+// 注册
+ros.on("user/:id", [](std::string &url, std::string &data, const std::map<std::string, std::string> &params) {
+    std::string id = params.at("id");
+    data = "User Profile: " + id;
+    return rt::FLAG_DONE;
+});
 
-int main(int argc, char const *argv[])
-{
-    rt::router ros;
+// 匹配
+auto [ptr, params] = ros.get("user/12345");
+// params["id"] == "12345"
+```
 
-    // 注册静态路由
-    ros.on("app/index", [](std::string &url, std::string &data, const std::map<std::string, std::string> &params)
-           {
-        data = "Static Index Page";
-        return rt::FLAG_DONE; });
+## 流式路由（Stream Router）
 
-    // 注册动态路由 :id 和 :action
-    ros.on("user/:id", [](std::string &url, std::string &data, const std::map<std::string, std::string> &params)
-           {
-        std::string id = params.count("id") ? params.at("id") : "unknown";
-        data = "User Profile: " + id;
-        return rt::FLAG_DONE; });
+支持通过回调分块输出数据的流式路由，适用于 SSE、大文件传输、实时数据推送等场景。
 
-    ros.on("api/:version/data", [](std::string &url, std::string &data, const std::map<std::string, std::string> &params)
-           {
-        std::string ver = params.count("version") ? params.at("version") : "v1";
-        data = "Data from API version: " + ver;
-        std::cout << "URL: " << url << " -> " << data << std::endl;
-        return rt::FLAG_DONE; });
-    ros.on("api/:version/list", [](std::string &url, std::string &data, const std::map<std::string, std::string> &params)
-           {
-        std::string ver = params.count("version") ? params.at("version") : "v1";
-        data = "Data from API version: " + ver;
-        std::cout << "URL: " << url << " -> " << data << std::endl;
-        return rt::FLAG_DONE; });
+### 类型定义
 
-    // 测试动态路由
-    std::string result_data;
-    std::string test_url = "user/12345";
+```c++
+using WriteCallback = std::function<void(const std::string &)>;
+using StreamHandlerFunc = std::function<void(std::string &, WriteCallback, const std::map<std::string, std::string> &)>;
+```
 
-    auto [ptr, params] = ros.get(test_url);
+- `WriteCallback` — 每次调用写入一个数据块
+- `StreamHandlerFunc` — 处理器通过反复调用 `WriteCallback` 输出数据
 
-    if (!ptr.expired())
-    {
-        auto node = ptr.lock();
-        node->func(test_url, result_data, params);
-        std::cout << "URL: " << test_url << " -> " << result_data << std::endl;
+### 注册 & 调用
 
-        // 打印提取的参数
-        std::cout << "Parameters: ";
-        for (const auto &p : params)
-        {
-            std::cout << "[" << p.first << "=" << p.second << "] ";
-        }
-        std::cout << std::endl;
-    }
-    else
-    {
-        std::cout << "Route not found: " << test_url << std::endl;
-    }
+```c++
+// 注册流式路由
+ros.on_stream("stream/chat", [](std::string &req, rt::WriteCallback write, const std::map<std::string, std::string> &params) {
+    write("[start]");
+    write("Hello");
+    write(", ");
+    write("World");
+    write("[end]");
+});
 
-    // 测试另一个动态路由
-    test_url = "api/v2/data";
-    auto [ptr2, params2] = ros.get(test_url);
-    if (!ptr2.expired())
-    {
-        auto node = ptr2.lock();
-        node->func(test_url, result_data, params2);
-    }
-    test_url = "api/v2/list";
-    auto [ptr3, params3] = ros.get(test_url);
-    if (!ptr3.expired())
-    {
-        auto node = ptr3.lock();
-        node->func(test_url, result_data, params3);
-    }
+// 检查是否存在
+if (ros.has_stream_handler("stream/chat")) {
+    // ...
+}
 
-    return 0;
+// 获取并调用
+auto handler = ros.get_stream_handler("stream/chat");
+if (handler) {
+    std::string req = "ping";
+    std::map<std::string, std::string> params;
+    handler(req, [](const std::string &chunk) {
+        std::cout << chunk;  // 输出: [start]Hello, World[end]
+    }, params);
 }
 ```

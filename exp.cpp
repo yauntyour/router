@@ -1,57 +1,108 @@
 #include "router.hpp"
 #include "iostream"
+#include "thread"
+#include "chrono"
 
 int main(int argc, char const *argv[])
 {
     rt::router ros;
 
-    ros.on("app/index");
-    ros.on("/", [](std::string &url, std::string &data, const std::map<std::string, std::string> &params) -> int
+    // ======== 1. 静态路由 ========
+    std::cout << "=== Static Route ===" << std::endl;
+    ros.on("app/index", [](std::string &url, std::string &data, const std::map<std::string, std::string> &params)
            {
-        std::cout << "root" << std::endl;
-        return 0; });
+        data = "Static Index Page";
+        return rt::FLAG_DONE; });
 
-    std::string url = "/";
-    std::string data = "";
-    auto [ptr, param] = ros.get("/");
-    auto node = ptr.lock();
-    node->func(url, data, param);
-
-    auto [ptr1, param1] = ros.get("app/index/");
-    std::cout << (ptr1.lock())->name << std::endl;
-
-    auto [ptr2, param2] = ros.get("app/index");
-    std::cout << (ptr2.lock())->name << std::endl;
-
-    auto [ptr3, param3] = ros.get("app");
-    std::cout << (ptr3.lock())->name << std::endl;
-
-    auto [ptr4, param4] = ros.get("app/");
-    std::cout << (ptr4.lock())->name << std::endl;
-
-    auto [ptr5, param5] = ros.get("/app");
-    std::cout << (ptr5.lock())->name << std::endl;
-
-    auto [ptr6, param6] = ros.get("/");
-    std::cout << (ptr6.lock())->name << std::endl;
-
-    auto [ptr7, param7] = ros.get("");
-    std::cout << (ptr7.lock())->name << std::endl;
-
-    auto [ptr8, param8] = ros.get("//////////");
-    std::cout << (ptr8.lock())->name << std::endl;
-
-    auto [ptr9, param9] = ros.get("app///////////index/");
-    std::cout << (ptr9.lock())->name << std::endl;
-
-    auto [ptr10, param10] = ros.get("app/api");
-    if (!ptr10.expired())
+    auto [ptr, param] = ros.get("app/index");
+    if (!ptr.expired())
     {
-        std::cout << (ptr10.lock())->name << std::endl;
+        std::string url = "app/index", data;
+        ptr.lock()->func(url, data, param);
+        std::cout << "GET /app/index -> " << data << std::endl;
     }
-    else
+
+    // ======== 2. 动态路由 ========
+    std::cout << "\n=== Dynamic Route ===" << std::endl;
+    ros.on("user/:id", [](std::string &url, std::string &data, const std::map<std::string, std::string> &params)
+           {
+        std::string id = params.count("id") ? params.at("id") : "unknown";
+        data = "User Profile: " + id;
+        return rt::FLAG_DONE; });
+
+    ros.on("api/:version/data", [](std::string &url, std::string &data, const std::map<std::string, std::string> &params)
+           {
+        std::string ver = params.count("version") ? params.at("version") : "v1";
+        data = "Data from API version: " + ver;
+        return rt::FLAG_DONE; });
+
+    std::string result_data;
+    std::string test_url = "user/12345";
+    auto [ptr2, params2] = ros.get(test_url);
+    ptr2.lock()->func(test_url, result_data, params2);
+    std::cout << "GET /user/12345 -> " << result_data << std::endl;
+
+    test_url = "api/v2/data";
+    auto [ptr3, params3] = ros.get(test_url);
+    ptr3.lock()->func(test_url, result_data, params3);
+    std::cout << "GET /api/v2/data -> " << result_data << std::endl;
+
+    // ======== 3. 流式路由 (新增) ========
+    std::cout << "\n=== Stream Route (New) ===" << std::endl;
+
+    // 注册流式路由
+    ros.on_stream("stream/chat", [](std::string &req, rt::WriteCallback write, const std::map<std::string, std::string> &params)
+           {
+        write("[start]");
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        write("Hello");
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        write(", ");
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        write("World");
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        write("[end]"); });
+
+    ros.on_stream("stream/data", [](std::string &req, rt::WriteCallback write, const std::map<std::string, std::string> &params)
+           {
+        for (int i = 1; i <= 3; i++)
+        {
+            write("{ \"chunk\": " + std::to_string(i) + " }");
+        } });
+
+    // 检查流式路由是否存在
+    if (ros.has_stream_handler("stream/chat"))
     {
-        std::cout << "not found" << std::endl;
+        std::cout << "Found stream handler: stream/chat" << std::endl;
     }
+
+    // 调用无参数的流式路由
+    auto handler = ros.get_stream_handler("stream/chat");
+    if (handler)
+    {
+        std::cout << "Invoking stream/chat:" << std::endl;
+        std::cout << "  ";
+        std::string req = "request-data";
+        std::map<std::string, std::string> empty_params;
+        handler(req, [](const std::string &chunk)
+                { std::cout << "[" << chunk << "]"; },
+                empty_params);
+        std::cout << std::endl;
+    }
+
+    // 调用带多次数据块输出的流式路由
+    auto handler2 = ros.get_stream_handler("stream/data");
+    if (handler2)
+    {
+        std::cout << "\nInvoking stream/data:" << std::endl;
+        std::cout << "  ";
+        std::string req = "";
+        std::map<std::string, std::string> empty_params;
+        handler2(req, [](const std::string &chunk)
+                 { std::cout << chunk << " "; },
+                 empty_params);
+        std::cout << std::endl;
+    }
+
     return 0;
 }
