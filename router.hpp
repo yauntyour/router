@@ -22,6 +22,10 @@ namespace rt
     // 修改回调函数类型，增加 params 参数用于接收动态路由参数
     using HandlerFunc = std::function<int(std::string &, std::string &, const std::map<std::string, std::string> &)>;
 
+    // 流式传输支持
+    using WriteCallback = std::function<void(const std::string &)>;
+    using StreamHandlerFunc = std::function<void(std::string &, WriteCallback, const std::map<std::string, std::string> &)>;
+
     int default_func(std::string &url, std::string &data, const std::map<std::string, std::string> &params)
     {
         data = "<null>";
@@ -50,6 +54,7 @@ namespace rt
     private:
         std::shared_ptr<node> base = std::shared_ptr<node>(new node());
         std::unordered_map<std::string, std::shared_ptr<node>> list;
+        std::unordered_map<std::string, StreamHandlerFunc> stream_handlers_;
 
         void fix_url(std::string &url)
         {
@@ -182,6 +187,32 @@ namespace rt
             {
                 base->func = func;
             }
+        }
+
+        // 注册流式路由
+        void on_stream(std::string url, StreamHandlerFunc func)
+        {
+            fix_url(url);
+            stream_handlers_[url] = std::move(func);
+        }
+
+        // 检查是否存在流式路由处理器
+        bool has_stream_handler(const std::string &url)
+        {
+            std::string fixed = url;
+            fix_url(fixed);
+            return stream_handlers_.find(fixed) != stream_handlers_.end();
+        }
+
+        // 获取流式路由处理器
+        StreamHandlerFunc get_stream_handler(const std::string &url)
+        {
+            std::string fixed = url;
+            fix_url(fixed);
+            auto it = stream_handlers_.find(fixed);
+            if (it != stream_handlers_.end())
+                return it->second;
+            return nullptr;
         }
 
         // 获取匹配结果及参数
